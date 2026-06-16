@@ -47,8 +47,8 @@ func (g *Gateway) Menu(ctx context.Context, conv contracts.Conversation, replyTo
 	for _, o := range opts {
 		out = append(out, dctl.SelectOption{Label: o.Label, Value: o.Value})
 	}
-	// customID carries the session so a click routes back to its bridge. The
-	// bridge wires the real session in Task 13; conv.ID is the default here.
+	// customID carries the conversation id so a click routes its component
+	// interaction back to the originating bridge.
 	_, err := g.c.SendSelectMenu(ctx, conv.ID, string(replyTo), prompt, ChoiceCustomID(conv.ID), out)
 	return err
 }
