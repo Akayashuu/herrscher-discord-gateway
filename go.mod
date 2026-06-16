@@ -3,11 +3,6 @@ module github.com/Herrscherd/herrscher-discord-gateway
 go 1.25
 
 require (
-	github.com/Herrscherd/dctl v0.0.0
-	github.com/Herrscherd/herrscher-contracts v0.0.0
-	github.com/coder/websocket v1.8.14
+	github.com/Herrscherd/dctl v1.1.0
+	github.com/Herrscherd/herrscher-contracts v0.1.1
 )
-
-replace github.com/Herrscherd/dctl => ../dctl
-
-replace github.com/Herrscherd/herrscher-contracts => ../herrscher-contracts
