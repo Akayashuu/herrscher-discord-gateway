@@ -74,10 +74,15 @@ func (p *Platform) Enabled() bool          { return p.c.Enabled() }
 func (p *Platform) DefaultChannel() string { return p.c.DefaultChannel() }
 
 func (p *Platform) EnsureChannel(ctx context.Context, parentID, name string) (contracts.Channel, error) {
-	// dctl ensures a top-level text channel by name in the sole guild; parentID
-	// has no analogue in the v1 client and is ignored.
-	_ = parentID
-	ch, err := p.c.Channels().Ensure(ctx, "", name)
+	// With a parent category, ensure the channel under it; otherwise ensure a
+	// top-level text channel in the sole guild.
+	ensure := func() (*dctl.Channel, error) {
+		if parentID != "" {
+			return p.c.Channels().EnsureUnder(ctx, parentID, name)
+		}
+		return p.c.Channels().Ensure(ctx, "", name)
+	}
+	ch, err := ensure()
 	if err != nil {
 		return contracts.Channel{}, err
 	}
