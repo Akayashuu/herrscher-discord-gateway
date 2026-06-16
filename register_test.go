@@ -1,7 +1,6 @@
 package discord
 
 import (
-	"context"
 	"testing"
 
 	"github.com/Akayashuu/herrscher-contracts"
@@ -13,10 +12,12 @@ func TestSelfRegisteredAsGateway(t *testing.T) {
 			if p.Gateway == nil {
 				t.Fatal("registered discord plugin has a nil gateway factory")
 			}
-			g, err := p.Gateway(context.Background(), contracts.PluginConfig{})
-			if err != nil || g == nil {
-				t.Fatalf("factory failed: g=%v err=%v", g, err)
+			if !p.Manifest.Capabilities.Reactions || !p.Manifest.Capabilities.SelectMenus {
+				t.Fatalf("discord manifest dropped capabilities: %+v", p.Manifest.Capabilities)
 			}
+			// The factory resolves the bot appID over the network, so a no-token
+			// build can't invoke it here; building a GatewaySet end to end is the
+			// integration check in herrscherd.
 			return
 		}
 	}

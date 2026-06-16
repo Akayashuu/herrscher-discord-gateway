@@ -2,7 +2,6 @@ package discord
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/Akayashuu/dctl"
@@ -64,8 +63,9 @@ func (a *ChannelAdmin) Send(ctx context.Context, channelID, content string) erro
 	return err
 }
 
-// Platform adapts the dctl client to contracts.Platform (the bridge's read/
-// channel-bootstrap/reaction/status/select-menu surface).
+// Platform adapts the dctl client to the neutral channel ports
+// contracts.ChannelReader and contracts.MenuRouter (the bridge's read/
+// channel-bootstrap/reaction/status/routed-menu surface).
 type Platform struct{ c *dctl.Client }
 
 func NewPlatform(c *dctl.Client) *Platform { return &Platform{c: c} }
@@ -121,12 +121,12 @@ func (p *Platform) UpsertStatusMessage(ctx context.Context, channelID, messageID
 	return p.c.UpsertStatusMessage(ctx, channelID, messageID, content)
 }
 
-func (p *Platform) SendSelectMenu(ctx context.Context, channelID, replyTo, content, session string, opts []contracts.Choice) (contracts.MessageID, error) {
+func (p *Platform) RouteMenu(ctx context.Context, channelID, replyTo, prompt, route string, opts []contracts.Choice) (contracts.MessageID, error) {
 	out := make([]dctl.SelectOption, 0, len(opts))
 	for _, o := range opts {
 		out = append(out, dctl.SelectOption{Label: o.Label, Value: o.Value})
 	}
-	m, err := p.c.SendSelectMenu(ctx, channelID, replyTo, content, ChoiceCustomID(session), out)
+	m, err := p.c.SendSelectMenu(ctx, channelID, replyTo, prompt, ChoiceCustomID(route), out)
 	if err != nil {
 		return "", err
 	}
@@ -136,71 +136,42 @@ func (p *Platform) SendSelectMenu(ctx context.Context, channelID, replyTo, conte
 	return contracts.MessageID(m.ID), nil
 }
 
-// interactionToken is the opaque ResponseToken the Discord adapter packs: the
-// interaction id and its short-lived token, needed to answer or edit it.
-type interactionToken struct{ id, token string }
-
-// Responder adapts the dctl client to contracts.CommandResponder. appID is the
-// bot's application id, needed to edit a deferred interaction response.
-type Responder struct {
-	c     *dctl.Client
-	appID string
+// responder is the per-command contracts.Responder. It packs the interaction
+// id+token and absorbs Discord's interaction mechanics — the ack-then-edit defer
+// dance for slow work, the autocomplete reply, and the component ack — so the
+// host only declares neutral intent (slow yes/no, the choices, the ack text).
+type responder struct {
+	c          *dctl.Client
+	appID      string
+	id, token  string
 }
 
-func NewResponder(c *dctl.Client, appID string) *Responder { return &Responder{c: c, appID: appID} }
-
-// token recovers the packed interaction id+token, rejecting a foreign token
-// instead of panicking the host dispatch loop.
-func token(tok contracts.ResponseToken) (interactionToken, error) {
-	it, ok := tok.(interactionToken)
-	if !ok {
-		return interactionToken{}, fmt.Errorf("discord: invalid response token %T", tok)
+func (r *responder) Respond(ctx context.Context, slow bool, produce func(context.Context) contracts.CommandResponse) error {
+	if !slow {
+		resp := produce(ctx)
+		return r.c.RespondInteraction(ctx, r.id, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
 	}
-	return it, nil
+	// Slow path: ack within the 3s callback deadline, run the work, then edit the
+	// deferred reply in. On a defer failure, fall back to a direct reply so the
+	// user is never left without a response.
+	if err := r.c.DeferInteraction(ctx, r.id, r.token, true); err != nil {
+		resp := produce(ctx)
+		return r.c.RespondInteraction(ctx, r.id, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
+	}
+	resp := produce(ctx)
+	return r.c.EditInteractionResponse(ctx, r.appID, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
 }
 
-func (r *Responder) Defer(ctx context.Context, tok contracts.ResponseToken, private bool) error {
-	it, err := token(tok)
-	if err != nil {
-		return err
-	}
-	return r.c.DeferInteraction(ctx, it.id, it.token, private)
-}
-
-func (r *Responder) Respond(ctx context.Context, tok contracts.ResponseToken, resp contracts.CommandResponse) error {
-	it, err := token(tok)
-	if err != nil {
-		return err
-	}
-	return r.c.RespondInteraction(ctx, it.id, it.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
-}
-
-func (r *Responder) Edit(ctx context.Context, tok contracts.ResponseToken, resp contracts.CommandResponse) error {
-	it, err := token(tok)
-	if err != nil {
-		return err
-	}
-	return r.c.EditInteractionResponse(ctx, r.appID, it.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
-}
-
-func (r *Responder) Autocomplete(ctx context.Context, tok contracts.ResponseToken, choices []contracts.AutocompleteChoice) error {
-	it, err := token(tok)
-	if err != nil {
-		return err
-	}
+func (r *responder) Suggest(ctx context.Context, choices []contracts.Choice) error {
 	out := make([]dctl.AutocompleteChoice, 0, len(choices))
 	for _, ch := range choices {
 		out = append(out, dctl.AutocompleteChoice{Name: ch.Label, Value: ch.Value})
 	}
-	return r.c.RespondAutocomplete(ctx, it.id, it.token, out)
+	return r.c.RespondAutocomplete(ctx, r.id, r.token, out)
 }
 
-func (r *Responder) AckComponent(ctx context.Context, tok contracts.ResponseToken, content string) error {
-	it, err := token(tok)
-	if err != nil {
-		return err
-	}
-	return r.c.AckComponent(ctx, it.id, it.token, content)
+func (r *responder) AckPick(ctx context.Context, content string) error {
+	return r.c.AckComponent(ctx, r.id, r.token, content)
 }
 
 // Registrar adapts the slash-command registration to contracts.CommandRegistrar.
@@ -221,16 +192,10 @@ func (p *Prober) Probe(ctx context.Context) (int64, error) {
 	return time.Since(start).Milliseconds(), err
 }
 
-// StatusReporter adapts the self-updating status message to contracts.StatusReporter.
-type StatusReporter struct {
-	c         *dctl.Client
-	channelID string
-}
-
-func NewStatusReporter(c *dctl.Client, channelID string) *StatusReporter {
-	return &StatusReporter{c: c, channelID: channelID}
-}
-
-func (s *StatusReporter) Upsert(ctx context.Context, prevID, content string) (string, error) {
-	return s.c.UpsertStatusMessage(ctx, s.channelID, prevID, content)
-}
+// Compile-time proof the Discord adapters satisfy the neutral channel ports.
+var (
+	_ contracts.ChannelReader = (*Platform)(nil)
+	_ contracts.MenuRouter    = (*Platform)(nil)
+	_ contracts.ChannelAdmin  = (*ChannelAdmin)(nil)
+	_ contracts.Responder     = (*responder)(nil)
+)

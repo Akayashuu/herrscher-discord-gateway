@@ -31,14 +31,17 @@ type gwPayload struct {
 type CommandSource struct {
 	c     *dctl.Client
 	token string
+	appID string
 	out   chan contracts.InboundCommand
 	live  contracts.Liveness
 }
 
 // NewCommandSource builds a CommandSource for client c, authenticating the
-// websocket IDENTIFY with token (the same bot token c was built with).
-func NewCommandSource(c *dctl.Client, token string) *CommandSource {
-	return &CommandSource{c: c, token: token, out: make(chan contracts.InboundCommand, 16)}
+// websocket IDENTIFY with token (the same bot token c was built with). appID is
+// the bot's application id, needed by the per-command responder to edit deferred
+// replies.
+func NewCommandSource(c *dctl.Client, token, appID string) *CommandSource {
+	return &CommandSource{c: c, token: token, appID: appID, out: make(chan contracts.InboundCommand, 16)}
 }
 
 // SetLiveness wires a transport-keepalive sink; the host calls this so its health
@@ -142,7 +145,7 @@ func (s *CommandSource) Run(ctx context.Context) error {
 				var in dctl.Interaction
 				if err := json.Unmarshal(p.D, &in); err == nil {
 					select {
-					case s.out <- mapInbound(in):
+					case s.out <- s.mapInbound(in):
 					case <-ctx.Done():
 						return ctx.Err()
 					}
@@ -153,20 +156,23 @@ func (s *CommandSource) Run(ctx context.Context) error {
 }
 
 // mapInbound converts a Discord interaction into the platform-neutral inbound
-// command the host dispatches.
-func mapInbound(in dctl.Interaction) contracts.InboundCommand {
-	kind := contracts.KindSlash
+// command the host dispatches, attaching a per-command responder that owns the
+// interaction id+token and the Discord reply mechanics.
+func (s *CommandSource) mapInbound(in dctl.Interaction) contracts.InboundCommand {
+	kind := contracts.KindCommand
 	switch in.Type {
 	case dctl.InteractionComponent:
-		kind = contracts.KindComponent
+		kind = contracts.KindChoicePick
 	case dctl.InteractionAutocomplete:
-		kind = contracts.KindAutocomplete
+		kind = contracts.KindSuggest
 	}
 
 	invoker := in.Member.User.ID
 
 	var customID string
-	if kind == contracts.KindComponent {
+	if kind == contracts.KindChoicePick {
+		// Resolve the menu's custom_id back to its neutral route (a session name);
+		// the host only ever sees the route, never the wire encoding.
 		if sess, ok := ParseChoiceCustomID(in.Data.CustomID); ok {
 			customID = sess
 		}
@@ -183,7 +189,7 @@ func mapInbound(in dctl.Interaction) contracts.InboundCommand {
 				CustomID: customID,
 			},
 		},
-		Token: interactionToken{id: in.ID, token: in.Token},
+		Responder: &responder{c: s.c, appID: s.appID, id: in.ID, token: in.Token},
 	}
 }
 

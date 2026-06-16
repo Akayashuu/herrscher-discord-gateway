@@ -18,8 +18,28 @@ func init() {
 			Category:     contracts.CategoryGateway,
 			Capabilities: contracts.Capabilities{Reactions: true, SelectMenus: true, Replies: true},
 		},
-		Gateway: func(_ context.Context, cfg contracts.PluginConfig) (contracts.Gateway, error) {
-			return NewGateway(dctl.New(cfg.Get("token"), cfg.Get("channel"))), nil
-		},
+		Gateway: NewGatewaySet,
 	})
+}
+
+// NewGatewaySet builds the full Discord channel from config: it wires the
+// outbound gateway, the websocket command source, the read/status reader, the
+// channel admin, the command registrar and the reachability prober. The status
+// channel comes from config ("status_channel"); appID is resolved up front so
+// the responder can edit deferred replies.
+func NewGatewaySet(ctx context.Context, cfg contracts.PluginConfig) (contracts.GatewaySet, error) {
+	token := cfg.Get("token")
+	c := dctl.New(token, cfg.Get("channel"))
+	appID, err := c.AppID(ctx)
+	if err != nil {
+		return contracts.GatewaySet{}, err
+	}
+	return contracts.GatewaySet{
+		Gateway:   NewGateway(c),
+		Source:    NewCommandSource(c, token, appID),
+		Reader:    NewPlatform(c),
+		Admin:     NewChannelAdmin(c),
+		Registrar: NewRegistrar(c),
+		Prober:    NewProber(c),
+	}, nil
 }
