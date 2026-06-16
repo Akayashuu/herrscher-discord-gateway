@@ -17,29 +17,23 @@ func init() {
 			Kind:         "discord",
 			Category:     contracts.CategoryGateway,
 			Capabilities: contracts.Capabilities{Reactions: true, SelectMenus: true, Replies: true},
+			Config: []contracts.Setting{
+				{Key: "token", Env: "DISCORD_BOT_TOKEN", Help: "Discord bot token", Required: true},
+				{Key: "channel", Env: "DISCORD_CHANNEL_ID", Help: "default channel id"},
+			},
 		},
 		Gateway: NewGatewaySet,
 	})
 }
 
-// NewGatewaySet builds the full Discord channel from config: it wires the
-// outbound gateway, the websocket command source, the read/status reader, the
-// channel admin, the command registrar and the reachability prober. The status
-// channel comes from config ("status_channel"); appID is resolved up front so
-// the responder can edit deferred replies.
+// NewGatewaySet builds the Discord channel from config: it wires the outbound
+// gateway, the read/status reader, the channel admin and the reachability prober.
 func NewGatewaySet(ctx context.Context, cfg contracts.PluginConfig) (contracts.GatewaySet, error) {
-	token := cfg.Get("token")
-	c := dctl.New(token, cfg.Get("channel"))
-	appID, err := c.Interactions().AppID(ctx)
-	if err != nil {
-		return contracts.GatewaySet{}, err
-	}
+	c := dctl.New(cfg.Get("token"), cfg.Get("channel"))
 	return contracts.GatewaySet{
-		Gateway:   NewGateway(discordClient{c}),
-		Source:    NewCommandSource(c, token, appID),
-		Reader:    NewPlatform(c),
-		Admin:     NewChannelAdmin(c),
-		Registrar: NewRegistrar(c),
-		Prober:    NewProber(c),
+		Gateway: NewGateway(discordClient{c}),
+		Reader:  NewPlatform(c),
+		Admin:   NewChannelAdmin(c),
+		Prober:  NewProber(c),
 	}, nil
 }

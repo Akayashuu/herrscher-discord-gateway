@@ -144,51 +144,6 @@ func (p *Platform) RouteMenu(ctx context.Context, channelID, replyTo, prompt, ro
 	return contracts.MessageID(m.ID), nil
 }
 
-// responder is the per-command contracts.Responder. It packs the interaction
-// id+token and absorbs Discord's interaction mechanics — the ack-then-edit defer
-// dance for slow work, the autocomplete reply, and the component ack — so the
-// host only declares neutral intent (slow yes/no, the choices, the ack text).
-type responder struct {
-	c          *dctl.Client
-	appID      string
-	id, token  string
-}
-
-func (r *responder) Respond(ctx context.Context, slow bool, produce func(context.Context) contracts.CommandResponse) error {
-	if !slow {
-		resp := produce(ctx)
-		return r.c.Interactions().Respond(ctx, r.id, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
-	}
-	// Slow path: ack within the 3s callback deadline, run the work, then edit the
-	// deferred reply in. On a defer failure, fall back to a direct reply so the
-	// user is never left without a response.
-	if err := r.c.Interactions().Defer(ctx, r.id, r.token, true); err != nil {
-		resp := produce(ctx)
-		return r.c.Interactions().Respond(ctx, r.id, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
-	}
-	resp := produce(ctx)
-	return r.c.Interactions().EditResponse(ctx, r.appID, r.token, dctl.Response{Content: resp.Content, Ephemeral: resp.Private})
-}
-
-func (r *responder) Suggest(ctx context.Context, choices []contracts.Choice) error {
-	out := make([]dctl.AutocompleteChoice, 0, len(choices))
-	for _, ch := range choices {
-		out = append(out, dctl.AutocompleteChoice{Name: ch.Label, Value: ch.Value})
-	}
-	return r.c.Interactions().RespondAutocomplete(ctx, r.id, r.token, out)
-}
-
-func (r *responder) AckPick(ctx context.Context, content string) error {
-	return r.c.Components().Ack(ctx, r.id, r.token, content)
-}
-
-// Registrar adapts the slash-command registration to contracts.CommandRegistrar.
-type Registrar struct{ c *dctl.Client }
-
-func NewRegistrar(c *dctl.Client) *Registrar { return &Registrar{c: c} }
-
-func (r *Registrar) Register(ctx context.Context) error { return RegisterCommands(ctx, r.c) }
-
 // Prober adapts a cheap REST round-trip (/users/@me) to contracts.Prober.
 type Prober struct{ c *dctl.Client }
 
@@ -205,5 +160,4 @@ var (
 	_ contracts.ChannelReader = (*Platform)(nil)
 	_ contracts.MenuRouter    = (*Platform)(nil)
 	_ contracts.ChannelAdmin  = (*ChannelAdmin)(nil)
-	_ contracts.Responder     = (*responder)(nil)
 )
